@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 from aiogram import Router, types, F, Bot
-from aiogram.filters import Command, Filter, CommandObject # Добавили Filter
+from aiogram.filters import Command, Filter, CommandObject
 from database.models import db_manager
 from services.matcher import matcher
 

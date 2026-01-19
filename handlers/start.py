@@ -1,20 +1,19 @@
 ﻿# -*- coding: utf-8 -*-
 import aiosqlite
+from datetime import datetime, timedelta # ДОБАВИЛИ ИМПОРТ ДЛЯ ВРЕМЕНИ
 from aiogram import Router, types, F, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject # Добавили CommandObject для аргументов
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.keyboard import InlineKeyboardBuilder  # Добавили для работы кнопок-ссылок
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from states import UserStates
 from database.models import db_manager
 from keyboards.reply import main_menu, stop_search_menu
 from services.matcher import matcher
 from config import DB_NAME
-from aiogram.types import LinkPreviewOptions # Не забудь добавить этот импорт в начало файла
 
 router = Router()
 
 # --- 1. ПОИСК СОБЕСЕДНИКА ---
-
 @router.message(Command("search"))
 @router.message(F.text == "🔍 Найти собеседника")
 async def start_search(message: types.Message, state: FSMContext):
@@ -38,8 +37,6 @@ async def stop_search(message: types.Message, state: FSMContext):
     await message.answer("🛑 Поиск остановлен.", reply_markup=main_menu)
 
 # --- 2. ПОМОЩЬ И ПРАВИЛА (/HELP) ---
-
-# --- КОМАНДА /HELP (СПИСОК КОМАНД) ---
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     text = (
@@ -56,43 +53,27 @@ async def cmd_help(message: types.Message):
         "В чате ты можешь отправлять мне текст, ссылки, гифки, стикеры, фотографии, "
         "видео или голосовые сообщения, и я их анонимно перешлю Вашему собеседнику."
     )
-    
     await message.answer(text, parse_mode="HTML")
 
-
-# --- КОМАНДА /RULES (ПРАВИЛА И ТЕЛЕГРАФ) ---
 @router.message(Command("rules"))
 async def cmd_rules(message: types.Message):
     rules_url = "https://telegra.ph/Pravila-anonimnogo-chata-05-22"
-    
     text = (
-        f"<a href='{rules_url}'>&#8203;</a>" # Невидимая ссылка для превью
+        f"<a href='{rules_url}'>&#8203;</a>"
         "Любой пользователь автоматически будет заблокирован, "
         "если он нарушит правила общения в нашем чате.\n\n"
         "<b>Правила анонимного чата</b>\n"
         "Анонимный чат — это платформа для общения с людьми "
         "разного происхождения и убеждений..."
     )
-    
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="⚡️ ПОСМОТРЕТЬ", 
-        url=rules_url)
-    )
-    
+    builder.row(types.InlineKeyboardButton(text="⚡️ ПОСМОТРЕТЬ", url=rules_url))
     await message.answer(
-        text, 
-        parse_mode="HTML", 
-        reply_markup=builder.as_markup(),
-        link_preview_options=types.LinkPreviewOptions(
-            is_disabled=False,
-            url=rules_url,
-            prefer_large_media=True
-        )
+        text, parse_mode="HTML", reply_markup=builder.as_markup(),
+        link_preview_options=types.LinkPreviewOptions(is_disabled=False, url=rules_url, prefer_large_media=True)
     )
 
 # --- 3. РЕФЕРАЛЬНАЯ СИСТЕМА ---
-
 @router.message(Command("referals"))
 @router.message(F.text == "👥 Рефералы")
 @router.callback_query(F.data == "invite_friend")
@@ -100,19 +81,18 @@ async def show_referals(event: types.Message | types.CallbackQuery):
     user_id = event.from_user.id
     bot_info = await event.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
-    
     count = await db_manager.get_referrals_count(user_id)
     
     text = (
         "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Приглашай друзей и получай крутые бонусы!\n\n"
+        "Приглашай друзей и получай PREMIUM статус!\n\n"
         f"🔗 <b>Твоя ссылка:</b>\n<code>{ref_link}</code>\n\n"
         f"📊 <b>Статистика:</b> Вы пригласили <b>{count}</b> чел.\n\n"
         "🎁 <b>Что получит друг?</b>\n"
         "— 1 день <b>PREMIUM</b> статуса сразу при регистрации.\n\n"
         "🚀 <b>Твоя выгода:</b>\n"
-        "— <b>+50 очков</b> к рейтингу за каждого друга!\n"
+        "— <b>+1 день PREMIUM</b> за каждого приглашенного друга!\n" # ИЗМЕНИЛИ ТЕКСТ ТУТ
         "━━━━━━━━━━━━━━━━━━\n"
         "<i>Просто отправь ссылку другу и жди, пока он заполнит анкету!</i>"
     )
@@ -123,29 +103,46 @@ async def show_referals(event: types.Message | types.CallbackQuery):
         await event.message.answer(text, parse_mode="HTML")
         await event.answer()
 
-# --- 4. КОМАНДА /START ---
-
+# --- 4. КОМАНДА /START (ИСПРАВЛЕННАЯ ЛОГИКА) ---
 @router.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = await db_manager.get_user(user_id)
     
     args = message.text.split()
-    if len(args) > 1 and not user:
+    # Если пользователь новый и пришел по реф-ссылке
+    if not user and len(args) > 1:
         referrer_id = args[1]
         if referrer_id.isdigit() and int(referrer_id) != user_id:
-            success = await db_manager.add_referral(user_id, int(referrer_id))
-            if success:
-                await message.answer("🎁 Добро пожаловать! Тебе начислен <b>1 день PREMIUM</b> по приглашению!", parse_mode="HTML")
+            ref_id = int(referrer_id)
+            
+            # 1. Даем прем новому пользователю (приглашенному)
+            now = datetime.now()
+            welcome_prem = now + timedelta(days=1)
+            # В базу данных нового пользователя мы добавим чуть позже в блоке регистрации, 
+            # но здесь помечаем успех в add_referral
+            await db_manager.add_referral(user_id, ref_id)
+            
+            # 2. Начисляем +1 день тому, кто пригласил
+            current_ref_finish = await db_manager.get_premium_finish_date(ref_id)
+            if current_ref_finish and current_ref_finish > now:
+                new_finish_date = current_ref_finish + timedelta(days=1)
+            else:
+                new_finish_date = now + timedelta(days=1)
+            
+            await db_manager.update_user_status(ref_id, is_premium=True)
+            await db_manager.set_premium_finish_date(ref_id, new_finish_date)
+            
+            # Уведомляем пригласившего
+            try:
+                await bot.send_message(ref_id, "🎁 Друг присоединился! Вам начислен <b>+1 день PREMIUM</b>.", parse_mode="HTML")
+            except:
+                pass
+            
+            await message.answer("🎁 Добро пожаловать! Тебе начислен <b>1 день PREMIUM</b> по приглашению!", parse_mode="HTML")
 
     if user and user.is_banned:
         return await message.answer("❌ Доступ к боту ограничен администрацией.")
-
-    if user:
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("UPDATE users SET first_name = ? WHERE telegram_id = ?", 
-                           (message.from_user.first_name, user_id))
-            await db.commit()
 
     if not user or not user.age or not user.gender:
         await message.answer("Привет! Давай заполним анкету. 👋\nСколько тебе лет?")
@@ -155,6 +152,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(UserStates.IDLE)
     await message.answer("Нажмите /search, чтобы искать собеседника", reply_markup=main_menu)
 
+# --- ОСТАЛЬНЫЕ ХЕНДЛЕРЫ БЕЗ ИЗМЕНЕНИЙ ---
+# ... (process_age, process_gender, process_search_pref и т.д.)
 # --- 5. КНОПКИ МЕНЮ И КОМНАТЫ ---
 
 @router.message(F.text == "👫 Поиск по полу")

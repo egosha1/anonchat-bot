@@ -2,6 +2,7 @@
 import aiosqlite
 from dataclasses import dataclass
 from typing import Optional, List
+from datetime import datetime  # ВАЖНО: добавили для работы методов с датой
 
 @dataclass
 class User:
@@ -21,6 +22,7 @@ class User:
     dislikes: int = 0
     first_name: Optional[str] = "Аноним"
     referred_by: Optional[int] = None
+    premium_until: Optional[str] = None # Добавили поле в датакласс
 
 class Database:
     def __init__(self, db_path: str):
@@ -45,10 +47,12 @@ class Database:
                     region TEXT DEFAULT 'Не указан',
                     likes INTEGER DEFAULT 0,
                     dislikes INTEGER DEFAULT 0,
-                    referred_by INTEGER
+                    referred_by INTEGER,
+                    premium_until DATETIME  -- Добавили колонку при создании
                 )
             """)
             
+            # Список колонок для проверки (если база уже создана)
             cols = {
                 "first_name": "TEXT DEFAULT 'Аноним'",
                 "room": "TEXT DEFAULT 'common'",
@@ -60,7 +64,8 @@ class Database:
                 "region": "TEXT DEFAULT 'Не указан'",
                 "likes": "INTEGER DEFAULT 0",
                 "dislikes": "INTEGER DEFAULT 0",
-                "referred_by": "INTEGER"
+                "referred_by": "INTEGER",
+                "premium_until": "DATETIME" # Добавили проверку наличия колонки даты
             }
             
             for col_name, col_type in cols.items():
@@ -70,19 +75,40 @@ class Database:
                     pass
             await db.commit()
 
+    # --- ТВОИ НОВЫЕ МЕТОДЫ ДЛЯ ВРЕМЕНИ ПРЕМИУМА ---
+
+    async def get_premium_finish_date(self, user_id: int):
+        """Получает объект datetime окончания премиума"""
+        async with aiosqlite.connect(self.db_path) as db:
+            res = await db.execute("SELECT premium_until FROM users WHERE telegram_id = ?", (user_id,))
+            row = await res.fetchone()
+            if row and row[0]:
+                try:
+                    return datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    return None
+            return None
+
+    async def set_premium_finish_date(self, user_id: int, date: datetime):
+        """Устанавливает дату окончания премиума в БД"""
+        async with aiosqlite.connect(self.db_path) as db:
+            date_str = date.strftime('%Y-%m-%d %H:%M:%S')
+            await db.execute(
+                "UPDATE users SET premium_until = ? WHERE telegram_id = ?", 
+                (date_str, user_id)
+            )
+            await db.commit()
+
     # --- МЕТОДЫ ДЛЯ АДМИН ПАНЕЛИ ---
 
     async def get_all_user_ids(self) -> List[int]:
-        """Возвращает список ID всех зарегистрированных пользователей для рассылки"""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT telegram_id FROM users") as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
 
     async def update_user_status(self, user_id: int, is_premium: bool):
-        """Обновляет статус премиума для пользователя"""
         async with aiosqlite.connect(self.db_path) as db:
-            # В БД 1 — это True, 0 — это False
             status = 1 if is_premium else 0
             await db.execute(
                 "UPDATE users SET is_premium = ? WHERE telegram_id = ?",
@@ -96,13 +122,10 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             user = await self.get_user(user_id)
             if not user:
+                # При регистрации по рефке сразу даем премиум-флаг
                 await db.execute(
                     "INSERT INTO users (telegram_id, is_premium, referred_by) VALUES (?, ?, ?)",
                     (user_id, 1, referrer_id)
-                )
-                await db.execute(
-                    "UPDATE users SET rating = rating + 50 WHERE telegram_id = ?",
-                    (referrer_id,)
                 )
                 await db.commit()
                 return True
@@ -113,25 +136,6 @@ class Database:
             async with db.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,)) as cursor:
                 res = await cursor.fetchone()
                 return res[0] if res else 0
-
-    # --- МЕТОДЫ ДЛЯ ТОПА ---
-
-    async def get_top_users(self, limit: int = 10) -> List[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT telegram_id, first_name, rating FROM users "
-                "WHERE rating > 0 AND is_banned = 0 "
-                "ORDER BY rating DESC LIMIT ?", (limit,)
-            ) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-
-    async def get_all_active_users(self) -> List[int]:
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT telegram_id FROM users WHERE is_banned = 0") as cursor:
-                rows = await cursor.fetchall()
-                return [row[0] for row in rows]
 
     # --- ОСТАЛЬНЫЕ МЕТОДЫ ---
 
@@ -174,19 +178,6 @@ class Database:
     async def update_search_gender(self, telegram_id: int, search_gender: str):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("UPDATE users SET search_gender = ? WHERE telegram_id = ?", (search_gender, telegram_id))
-            await db.commit()
-
-    async def update_rating(self, telegram_id: int, is_like: bool):
-        async with aiosqlite.connect(self.db_path) as db:
-            if is_like:
-                await db.execute("UPDATE users SET likes = likes + 1, rating = rating + 1 WHERE telegram_id = ?", (telegram_id,))
-            else:
-                await db.execute("UPDATE users SET dislikes = dislikes + 1, rating = rating - 1 WHERE telegram_id = ?", (telegram_id,))
-            await db.commit()
-
-    async def set_premium(self, user_id: int, status: bool):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE users SET is_premium = ? WHERE telegram_id = ?", (1 if status else 0, user_id))
             await db.commit()
 
     async def set_ban_status(self, user_id: int, status: bool):

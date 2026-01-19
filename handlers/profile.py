@@ -63,7 +63,7 @@ async def show_profile(message: types.Message):
 
     # 4. Кнопка рефералов — ТЕПЕРЬ В САМОМ НИЗУ
     builder.row(
-        types.InlineKeyboardButton(text="👥 Пригласить друга (+50💎)", callback_data="invite_friend")
+        types.InlineKeyboardButton(text="👥 Пригласить друга (+1VIP💎)", callback_data="invite_friend")
     )
 
     await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
